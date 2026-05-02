@@ -1,7 +1,7 @@
 import requests
 import json
-import time
 import os
+import time
 from dotenv import load_dotenv
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -20,10 +20,8 @@ FILE_ID = int(os.getenv("FILE_ID"))
 DEVICE_ID = int(os.getenv("DEVICE_ID"))
 RUN_AS_USER_ID = int(os.getenv("RUN_AS_USER_ID"))
 
-# Método de agendamento:
-METODO_AGENDAMENTO = "v3_deploy"
 
-# INPUTS DO BOT - nomes devem ser exatamente iguais aos do bot no Control Room
+# INPUTS DO BOT
 bot_inputs = {
     "bolManual": True,
     "bolUploadClarity": False,
@@ -41,9 +39,13 @@ bot_inputs = {
 }
 
 
+# ===========================================================
+# CONVERSÃO INPUTS EVITANDO BLOQUEIO DE TIPOS DE DADOS NA API
+# ===========================================================
+
 def converter_bot_input_para_api(inputs: dict):
-    """Formato API AA: type + string|number|boolean (number como string)"""
     resultado = {}
+
     for chave, valor in inputs.items():
         if isinstance(valor, bool):
             resultado[chave] = {"type": "BOOLEAN", "boolean": valor}
@@ -51,6 +53,7 @@ def converter_bot_input_para_api(inputs: dict):
             resultado[chave] = {"type": "NUMBER", "number": str(int(valor))}
         else:
             resultado[chave] = {"type": "STRING", "string": str(valor)}
+
     return resultado
 
 
@@ -59,7 +62,6 @@ def converter_bot_input_para_api(inputs: dict):
 # ==================================================
 
 def autenticar():
-
     print("Autenticando...")
 
     response = requests.post(
@@ -80,11 +82,10 @@ def autenticar():
 
 
 # ==================================================
-# INPUT DATA + HORÁRIO (COM TIMEZONE REAL)
+# INPUT DATA/HORA
 # ==================================================
 
 def solicitar_data_horario():
-
     print("\nInforme a DATA e HORÁRIO de execução (HORÁRIO BRASIL)")
     print("Formato: DD/MM/AAAA HH:MM")
     print("Exemplo: 25/03/2026 14:30\n")
@@ -106,7 +107,6 @@ def solicitar_data_horario():
 
         print("Agendado (BRT):", execucao_brt)
 
-        # conversão REAL para UTC
         execucao_utc = execucao_brt.astimezone(ZoneInfo("UTC"))
 
         print("Convertido (UTC):", execucao_utc)
@@ -116,104 +116,57 @@ def solicitar_data_horario():
     except ValueError:
         raise Exception("Formato inválido. Use DD/MM/AAAA HH:MM")
 
-# ==================================================
-# MÉTODO v3_deploy: Aguarda horário e executa via v3/automations/deploy
-# ==================================================
-# Usa a API que funciona (igual run_rpa_v3), mas aguarda o horário antes de executar.
-# O script precisa permanecer aberto até o horário.
-
-def aguardar_e_executar(token, horario_utc):
-    br_tz = ZoneInfo("America/Sao_Paulo")
-    agora = datetime.now(ZoneInfo("UTC"))
-
-    if horario_utc <= agora:
-        raise Exception("Horário já passou.")
-
-    segundos_espera = (horario_utc - agora).total_seconds()
-    horario_brt = horario_utc.astimezone(br_tz)
-
-    print(f"\nAguardando até {horario_brt.strftime('%d/%m/%Y %H:%M')} BRT ({segundos_espera:.0f}s)...")
-    print("(Mantenha este terminal aberto.)\n")
-
-    time.sleep(segundos_espera)
-
-    print("Horário atingido! Reautenticando e executando bot...")
-    token = autenticar()
-
-    url = f"{BASE_URL}/v3/automations/deploy"
-    headers = {"X-Authorization": token, "Content-Type": "application/json"}
-    device_id = DEVICE_ID
-    run_as = RUN_AS_USER_ID
-    body = {
-        "fileId": FILE_ID,
-        "deviceIds": [device_id],
-        "runAsUserIds": [run_as],
-        "botInput": converter_bot_input_para_api(bot_inputs),
-    }
-
-    print("\nPayload:", json.dumps(body, indent=2))
-
-    response = requests.post(url, json=body, headers=headers)
-    print("\nStatus:", response.status_code)
-    print("Resposta:", response.text)
-
-    if response.status_code not in (200, 201):
-        raise Exception("Falha ao executar bot")
-
-    print("\nBOT EXECUTADO COM SUCESSO!")
-
 
 # ==================================================
-# MÉTODO v2_schedule: API v2/schedule/automations (pode dar 500)
+# AGENDAMENTO (SEM BLOQUEIO) SCRIPT RODA POREM ROBO SO RODA NO HORARIO AGENDADO, TESTADO COM SUCESSO COM BOT INPUTS ENVIADOS VIA API
 # ==================================================
 
 def agendar_via_api(token, horario_utc):
     url = f"{BASE_URL}/v2/schedule/automations"
-    headers = {"X-Authorization": token, "Content-Type": "application/json"}
+
+    headers = {
+        "X-Authorization": token,
+        "Content-Type": "application/json"
+    }
+
     body = {
         "schedule": {
+            "name": f"Agendamento_{FILE_ID}_{int(time.time())}",
+            "description": "Agendamento via API",
+            "scheduleType": "ONCE",
             "status": "ACTIVE",
-            "scheduleType": "NONE",
             "timeZone": "UTC",
             "startDate": horario_utc.strftime("%Y-%m-%d"),
             "startTime": horario_utc.strftime("%H:%M"),
-            "repeatEnabled": False,
-            "misfireScheduleConfig": False,
-            "scheduleResiliency": {
-                "common": {
-                    "detectAndNotify": {"enabled": False, "hideSensitiveInformation": False},
-                    "recording": {"enabled": False, "botStatus": "FAILED"},
-                    "handleUnexpectedPopups": True,
-                }
-            },
+            "repeatEnabled": False
         },
         "deployment": {
             "botId": FILE_ID,
-            "automationName": f"Execucao_{FILE_ID}_API",
-            "description": f"Agendamento via API - Bot {FILE_ID}",
-            "botLabel": "",
-            "automationPriority": "PRIORITY_MEDIUM",
+            "automationName": f"Execucao_{FILE_ID}",
             "botInput": converter_bot_input_para_api(bot_inputs),
             "runElevated": False,
             "hideBotAgentUi": True,
+            "automationPriority": "PRIORITY_MEDIUM",
             "unattendedRequest": {
-                "runAsUserIds": [str(RUN_AS_USER_ID)],
-                "poolIds": [],
-                "numOfRunAsUsersToUse": "1",
-                "deviceUsageType": "RUN_ONLY_ON_DEFAULT_DEVICE",
-            },
-        },
+                "runAsUserIds": [RUN_AS_USER_ID],
+                "deviceIds": [DEVICE_ID],
+                "numOfRunAsUsersToUse": 1
+            }
+        }
     }
 
-    print("\nPayload:", json.dumps(body, indent=2))
+    print("\nPayload:")
+    print(json.dumps(body, indent=2))
+
     response = requests.post(url, json=body, headers=headers)
+
     print("\nStatus:", response.status_code)
     print("Resposta:", response.text)
 
     if response.status_code not in (200, 201):
-        raise Exception("Falha ao agendar")
+        raise Exception("Falha ao agendar bot")
 
-    print("\nBOT AGENDADO COM SUCESSO!")
+    print("\n BOT AGENDADO COM SUCESSO!")
 
 
 # ==================================================
@@ -223,8 +176,4 @@ def agendar_via_api(token, horario_utc):
 if __name__ == "__main__":
     token = autenticar()
     horario_utc = solicitar_data_horario()
-
-    if METODO_AGENDAMENTO == "v3_deploy":
-        aguardar_e_executar(token, horario_utc)
-    else:
-        agendar_via_api(token, horario_utc)
+    agendar_via_api(token, horario_utc)
